@@ -1,0 +1,17 @@
+# R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# Data
+data/
+*.rds
+
+# QA and heavy outputs
+outputs/qa/
+outputs/tables/
+
+# OS junk
+.DS_Store
+Thumbs.db

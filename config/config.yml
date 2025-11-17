@@ -1,0 +1,40 @@
+start_date: '2015-01-01'
+end_date: '2025-01-01'
+alpha: 0.95
+horizon_days: 21        
+scenarios: 20000
+seed: 42
+constraints:
+  long_only: yes
+  per_name_cap: 0.1
+universe:
+- AAPL
+- AMGN
+- AMZN
+- AXP
+- BA
+- CAT
+- CRM
+- CSCO
+- CVX
+- DIS
+- DOW
+- GS
+- HD
+- HON
+- IBM
+- INTC
+- JNJ
+- JPM
+- KO
+- MCD
+- MMM
+- MRK
+- MSFT
+- NKE
+- PG
+- TRV
+- UNH
+- V
+- VZ
+- WMT
