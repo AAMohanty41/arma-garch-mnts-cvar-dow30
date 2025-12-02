@@ -25,7 +25,6 @@ suppressPackageStartupMessages({
   library(Matrix)           # for nearPD(), just in case temStaR calls it
 })
 
-
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
 # --- load config + ensure dirs ---
@@ -38,19 +37,19 @@ for (d in dirs) if (!dir.exists(d)) dir.create(d, recursive = TRUE, showWarnings
 
 
 
-# --- load standardized residuals from ARMA–GARCH ---
-eps_dt <- readRDS("data/processed/eps_daily.rds")
+# --- load DAILY LOG RETURNS (no-ARMA version just uses same return data) ---
+rd <- readRDS("data/processed/returns_daily.rds")
 
-eps <- as.data.frame(eps_dt)
-eps$Date <- NULL
-eps$date <- NULL
+rd <- as.data.frame(rd)
+rd$Date <- NULL
+rd$date <- NULL
 
 # keep only numeric columns
-num_cols <- sapply(eps, is.numeric)
-eps <- eps[, num_cols, drop = FALSE]
+num_cols <- sapply(rd, is.numeric)
+rd <- rd[, num_cols, drop = FALSE]
 
-# force to numeric matrix and drop any non-finite rows
-X <- data.matrix(eps)
+# numeric matrix & drop any bad rows
+X <- data.matrix(rd)
 good <- stats::complete.cases(X) & apply(is.finite(X), 1, all)
 X <- X[good, , drop = FALSE]
 
@@ -113,8 +112,11 @@ sim_agg <- Reduce(`+`, sim_list)    # nsim x k
 colnames(sim_agg) <- tickers
 
 # Save both RDS and CSV (CSV is large; keep it optional if needed)
-saveRDS(sim_agg, "data/processed/sims_mnts_2d.rds")
-fwrite(as.data.table(sim_agg), "outputs/tables/sims_mnts_2d.csv")
+saveRDS(st,      "data/processed/mnts_fit_noarma.rds")
+saveRDS(sim_agg, "data/processed/sims_mnts_21d_noarma.rds")
+
+fwrite(as.data.table(sim_agg),
+       "outputs/tables/sims_mnts_21d_noarma.csv")
 
 message("Saved: data/processed/mnts_fit.rds")
 message("Saved: data/processed/sims_mnts_2d.rds")

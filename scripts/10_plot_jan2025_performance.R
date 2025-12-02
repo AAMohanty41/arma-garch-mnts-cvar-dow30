@@ -1,219 +1,173 @@
 #!/usr/bin/env Rscript
 
 suppressPackageStartupMessages({
-  library(yaml)
-  library(tidyquant)
+  library(ggplot2)
   library(dplyr)
   library(tidyr)
-  library(ggplot2)
   library(readr)
-  library(scales)
 })
 
-message("=== 10_plot_jan2025_performance.R : Jan 21-day performance visuals ===")
+message("=== 10_backtest_plots_2025.R : plotting 2025 backtest results ===")
 
-# ------------------------------------------------------------
-# 1) Load Jan 2025 summary table (from 09_compare_jan2025.R)
-# ------------------------------------------------------------
+# --------------------------------------------------------------------
+# 0) Load data
+# --------------------------------------------------------------------
+sum_path <- "outputs/tables/backtest_2025_summary.csv"
+win_path <- "outputs/tables/backtest_2025_windows_detail.csv"
 
-summary_path <- "outputs/tables/jan2025_backtest_summary.csv"
-if (!file.exists(summary_path)) {
-  stop("Cannot find ", summary_path,
-       " — run scripts/09_compare_jan2025.R first.")
+if (!file.exists(sum_path) || !file.exists(win_path)) {
+  stop("Missing backtest CSVs. Run 09_compare_2025.R first.")
 }
 
-jan_summary <- read.csv(summary_path, stringsAsFactors = FALSE)
+sum25 <- read_csv(sum_path, show_col_types = FALSE)
+win25 <- read_csv(win_path, show_col_types = FALSE)
 
-# ------------------------------------------------------------
-# 2) Barplot: predicted vs realized 21-day return
-# ------------------------------------------------------------
-
-df_long <- jan_summary %>%
-  select(portfolio, pred_mean_21d, realized_21d) %>%
-  pivot_longer(
-    cols = c(pred_mean_21d, realized_21d),
-    names_to = "type",
-    values_to = "value"
-  ) %>%
-  mutate(
-    type = recode(
-      type,
-      pred_mean_21d = "Predicted mean (21d)",
-      realized_21d  = "Realized return (21d)"
-    )
-  )
-
-p_bar <- ggplot(df_long,
-                aes(x = portfolio, y = value, fill = type)) +
-  geom_col(position = "dodge") +
-  scale_y_continuous(labels = percent_format(accuracy = 0.1)) +
-  labs(
-    x = NULL,
-    y = "21-day return",
-    fill = NULL,
-    title = "Predicted vs realized 21-day return\nHistorical vs CVaR Max-Sharpe portfolios"
-  ) +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = "bottom")
+sum25$portfolio <- factor(
+  sum25$portfolio,
+  levels = c("MS_historical", "MS_CVaR_ARMA", "MS_CVaR_noARMA")
+)
 
 dir.create("outputs/figures", showWarnings = FALSE, recursive = TRUE)
 
-ggsave("outputs/figures/jan2025_pred_vs_realized_returns.png",
-       plot = p_bar,
-       width = 7,
-       height = 4,
-       dpi   = 300)
-
-message("Saved bar plot -> outputs/figures/jan2025_pred_vs_realized_returns.png")
-
-# ------------------------------------------------------------
-# 3) Time series: cumulative returns over the same 21-day window
-# ------------------------------------------------------------
-
-cfg <- yaml::read_yaml("config/config.yml")
-tickers <- cfg$universe
-last_train_date <- as.Date(cfg$end_date)  # e.g. "2024-12-31"
-
-# ---- Load weights for historical Max-Sharpe ----
-
-w_ms_path <- "outputs/tables/weights_max_sharpe.csv"
-if (!file.exists(w_ms_path)) {
-  stop("Cannot find ", w_ms_path, " — run 04_max_sharpe.R first.")
-}
-
-w_ms_df <- read.csv(w_ms_path, stringsAsFactors = FALSE)
-
-# detect name/weight columns flexibly
-name_col <- NULL
-if ("ticker" %in% names(w_ms_df)) {
-  name_col <- "ticker"
-} else if ("symbol" %in% names(w_ms_df)) {
-  name_col <- "symbol"
-} else {
-  stop("weights_max_sharpe.csv must have a 'ticker' or 'symbol' column; found: ",
-       paste(names(w_ms_df), collapse = ", "))
-}
-
-weight_col <- NULL
-if ("weight" %in% names(w_ms_df)) {
-  weight_col <- "weight"
-} else if ("w" %in% names(w_ms_df)) {
-  weight_col <- "w"
-} else {
-  stop("weights_max_sharpe.csv must have a 'weight' or 'w' column; found: ",
-       paste(names(w_ms_df), collapse = ", "))
-}
-
-w_ms_vec <- setNames(w_ms_df[[weight_col]], w_ms_df[[name_col]])
-
-# ---- Load CVaR-frontier Max-Sharpe weights ----
-
-frontier_path <- "outputs/tables/frontier_cvar_21d.csv"
-if (!file.exists(frontier_path)) {
-  stop("Cannot find ", frontier_path, " — run 07_frontier_cvar.R first.")
-}
-
-frontier <- read.csv(frontier_path, stringsAsFactors = FALSE)
-
-if (!("Sharpe_sd" %in% names(frontier))) {
-  stop("frontier_cvar_21d.csv has no 'Sharpe_sd' column.")
-}
-
-best_idx <- which.max(frontier$Sharpe_sd)
-
-w_cols <- grep("^w_", names(frontier), value = TRUE)
-if (length(w_cols) == 0) {
-  stop("No w_* columns found in frontier_cvar_21d.csv.")
-}
-
-w_cvar_vec <- as.numeric(frontier[best_idx, w_cols])
-names(w_cvar_vec) <- sub("^w_", "", w_cols)
-
-# Enforce same ticker universe / order
-common_tickers <- intersect(tickers, names(w_ms_vec))
-common_tickers <- intersect(common_tickers, names(w_cvar_vec))
-common_tickers <- sort(common_tickers)
-
-w_ms_vec   <- w_ms_vec[common_tickers]
-w_cvar_vec <- w_cvar_vec[common_tickers]
-
-# ------------------------------------------------------------
-# 4) Fetch the same 21 future trading days as in 09_compare_jan2025
-# ------------------------------------------------------------
-
-message("Downloading early-2025 prices for time series…")
-
-prices_early <- tq_get(
-  common_tickers,
-  from = last_train_date - 15,
-  to   = last_train_date + 60,
-  get  = "stock.prices",
-  complete_cases = FALSE
-) %>%
-  select(symbol, date, adjusted)
-
-if (nrow(prices_early) == 0) {
-  stop("No price data returned for early 2025. Check internet / ticker availability.")
-}
-
-daily_all <- prices_early %>%
-  arrange(symbol, date) %>%
-  group_by(symbol) %>%
-  mutate(
-    ret_log = log(adjusted / lag(adjusted))
+# --------------------------------------------------------------------
+# 1) Predicted vs realized mean 21d return
+# --------------------------------------------------------------------
+mean_long <- sum25 %>%
+  select(portfolio, pred_mean_21d, realized_mean_21d) %>%
+  pivot_longer(
+    cols = c(pred_mean_21d, realized_mean_21d),
+    names_to = "type",
+    values_to = "mean_21d"
   ) %>%
-  ungroup()
+  mutate(type = recode(type,
+                       pred_mean_21d     = "Predicted",
+                       realized_mean_21d = "Realized"))
 
-future_dates <- sort(unique(daily_all$date[daily_all$date > last_train_date]))
-h <- 21L
-if (length(future_dates) < h) {
-  stop("Fewer than ", h, " trading days after ", last_train_date,
-       " in fetched data. Got: ", length(future_dates))
-}
-
-window_dates <- future_dates[1:h]
-
-rets_win <- daily_all %>%
-  filter(date %in% window_dates) %>%
-  select(date, symbol, ret_log) %>%
-  pivot_wider(names_from = symbol, values_from = ret_log) %>%
-  arrange(date) %>%
-  drop_na()
-
-R_daily <- as.matrix(rets_win[, common_tickers])
-
-# daily portfolio log returns
-ret_ms_daily   <- as.numeric(R_daily %*% w_ms_vec)
-ret_cvar_daily <- as.numeric(R_daily %*% w_cvar_vec)
-
-# cumulative simple returns: exp(cumsum(log)) - 1
-cum_ms   <- exp(cumsum(ret_ms_daily))   - 1
-cum_cvar <- exp(cumsum(ret_cvar_daily)) - 1
-
-ts_df <- tibble(
-  date = rets_win$date,
-  MS_historical    = cum_ms,
-  MS_CVaR_frontier = cum_cvar
-) %>%
-  pivot_longer(-date, names_to = "portfolio", values_to = "cum_return")
-
-p_ts <- ggplot(ts_df, aes(x = date, y = cum_return, color = portfolio)) +
-  geom_line(size = 1) +
-  scale_y_continuous(labels = percent_format(accuracy = 0.1)) +
+p_mean <- ggplot(mean_long, aes(x = portfolio, y = mean_21d, fill = type)) +
+  geom_col(position = "dodge") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
   labs(
+    title = "Predicted vs realized 21-day mean return (2025)",
     x = NULL,
-    y = "Cumulative return over 21 days",
-    color = NULL,
-    title = "Cumulative performance over first 21 trading days after 2024-12-31"
+    y = "21-day log return"
   ) +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = "bottom")
+  theme_minimal()
 
-ggsave("outputs/figures/jan2025_cum_returns_21d.png",
-       plot = p_ts,
-       width = 7,
-       height = 4,
-       dpi   = 300)
+ggsave("outputs/figures/backtest2025_pred_vs_real_mean.png",
+       p_mean, width = 7, height = 4, dpi = 300)
 
-message("Saved time series plot -> outputs/figures/jan2025_cum_returns_21d.png")
-message("=== Done: 10_plot_jan2025_performance.R ===")
+# --------------------------------------------------------------------
+# 2) Predicted vs realized 21d volatility (SD)
+# --------------------------------------------------------------------
+sd_long <- sum25 %>%
+  select(portfolio, pred_sd_21d, realized_sd_21d) %>%
+  pivot_longer(
+    cols = c(pred_sd_21d, realized_sd_21d),
+    names_to = "type",
+    values_to = "sd_21d"
+  ) %>%
+  mutate(type = recode(type,
+                       pred_sd_21d     = "Predicted",
+                       realized_sd_21d = "Realized"))
+
+p_sd <- ggplot(sd_long, aes(x = portfolio, y = sd_21d, fill = type)) +
+  geom_col(position = "dodge") +
+  labs(
+    title = "Predicted vs realized 21-day volatility (2025)",
+    x = NULL,
+    y = "SD of 21-day log return"
+  ) +
+  theme_minimal()
+
+ggsave("outputs/figures/backtest2025_pred_vs_real_sd.png",
+       p_sd, width = 7, height = 4, dpi = 300)
+
+# --------------------------------------------------------------------
+# 3) VaR breach rate (how calibrated are the models?)
+# --------------------------------------------------------------------
+p_var <- ggplot(sum25, aes(x = portfolio, y = VaR95_breach_rate)) +
+  geom_col() +
+  geom_hline(yintercept = 0.05, linetype = "dashed") +
+  labs(
+    title = "Empirical 95% VaR breach rate in 2025",
+    x = NULL,
+    y = "Fraction of 21-day windows with loss > VaR"
+  ) +
+  theme_minimal()
+
+ggsave("outputs/figures/backtest2025_var_breach_rate.png",
+       p_var, width = 7, height = 4, dpi = 300)
+
+# --------------------------------------------------------------------
+# 4) Time series of realized 21d returns across 2025
+# --------------------------------------------------------------------
+win_long <- win25 %>%
+  mutate(
+    start_date = as.Date(start_date),
+    end_date   = as.Date(end_date),
+    mid_date   = start_date + (end_date - start_date) / 2
+  ) %>%
+  select(window_id, mid_date,
+         realized_ms_21d,
+         realized_cvar_arma_21d,
+         realized_cvar_noarma_21d) %>%
+  pivot_longer(
+    cols = starts_with("realized_"),
+    names_to = "portfolio",
+    values_to = "ret_21d"
+  ) %>%
+  mutate(portfolio = recode(
+    portfolio,
+    realized_ms_21d          = "MS_historical",
+    realized_cvar_arma_21d   = "MS_CVaR_ARMA",
+    realized_cvar_noarma_21d = "MS_CVaR_noARMA"
+  ))
+
+p_ts <- ggplot(win_long, aes(x = mid_date, y = ret_21d, color = portfolio)) +
+  geom_line() +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    title = "Realized 21-day portfolio returns across 2025",
+    x = "Window midpoint",
+    y = "21-day log return"
+  ) +
+  theme_minimal()
+
+ggsave("outputs/figures/backtest2025_realized_returns_timeseries.png",
+       p_ts, width = 7.5, height = 4.5, dpi = 300)
+
+# --------------------------------------------------------------------
+# 5) Percentile distribution (calibration of full MNTS sims)
+# --------------------------------------------------------------------
+perc_long <- win25 %>%
+  select(window_id,
+         percentile_ms,
+         percentile_cvar_arma,
+         percentile_cvar_noarma) %>%
+  pivot_longer(
+    cols = -window_id,
+    names_to = "portfolio",
+    values_to = "percentile"
+  ) %>%
+  mutate(portfolio = recode(
+    portfolio,
+    percentile_ms          = "MS_historical",
+    percentile_cvar_arma   = "MS_CVaR_ARMA",
+    percentile_cvar_noarma = "MS_CVaR_noARMA"
+  ))
+
+p_perc <- ggplot(perc_long, aes(x = portfolio, y = percentile)) +
+  geom_boxplot() +
+  geom_hline(yintercept = 0.5, linetype = "dashed") +
+  labs(
+    title = "Distribution of realized 21-day percentiles vs MNTS sims (2025)",
+    x = NULL,
+    y = "Percentile in simulated distribution"
+  ) +
+  theme_minimal()
+
+ggsave("outputs/figures/backtest2025_percentile_boxplot.png",
+       p_perc, width = 7, height = 4, dpi = 300)
+
+message("=== Done: 10_backtest_plots_2025.R (figures in outputs/figures/) ===")
