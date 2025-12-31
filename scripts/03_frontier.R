@@ -5,7 +5,7 @@ library(readr)
 library(scales)
 library(ggplot2)
 
-# --- load inputs ---
+## Inputs
 cfg <- yaml::read_yaml("config/config.yml")
 cap <- cfg$constraints$per_name_cap
 
@@ -15,27 +15,27 @@ Sigma0 <- obj$Sigma                  # monthly covariance
 tickers <- obj$tickers
 N <- length(mu)
 
-# make covariance safely PD
+# nudge Sigma to be PD 
 eps <- max(1e-8, 1e-6 * mean(diag(Sigma0)))
 Sigma <- Sigma0 + diag(eps, N)
 
-# helpers -------------------------------------------------------------
+## Helpers
 vol_of <- function(w) sqrt(drop(t(w) %*% Sigma %*% w))
 ret_of <- function(w) drop(sum(mu * w))
 
-# Build constraint matrices for solve.QP: t(Amat) %*% w >= bvec
+## Constraints: sum(w)=1, w>=0, w<=cap
 ones <- rep(1, N)
 I    <- diag(N)
 
 Amat_base <- cbind(ones,  I,  -I)                 # sum(w)=1; w>=0; -w>=-cap  (w<=cap)
 bvec_base <- c(1,       rep(0, N), rep(-cap, N))
-meq_base  <- 1                                    # first constraint is equality
+meq_base  <- 1
 
-# global min-variance (GMV), with bounds but no return target
+# GMV under the same long-only + cap constraints
 gmv <- solve.QP(Dmat = 2*Sigma, dvec = rep(0, N),
                 Amat = Amat_base, bvec = bvec_base, meq = meq_base)$solution
 
-# extreme returns under the same bounds (approx LP with tiny quad term)
+# feasible return range under constraints (tiny quad term just to keep solve.QP happy)
 Dtiny <- diag(1e-8, N)
 w_maxret <- solve.QP(Dmat = Dtiny, dvec =  mu,
                      Amat = Amat_base, bvec = bvec_base, meq = meq_base)$solution
@@ -44,10 +44,10 @@ w_minret <- solve.QP(Dmat = Dtiny, dvec = -mu,
 r_max <- ret_of(w_maxret)
 r_min <- ret_of(w_minret)
 
-# grid of target returns across the feasible range
+# target return grid
 r_grid <- seq(r_min, r_max, length.out = 60)
 
-# efficient frontier: minimize variance s.t. return >= r_t, bounds, and fully invested
+## Frontier points: min var s.t. E[r] >= target
 solve_frontier_point <- function(r_t) {
   Amat <- cbind(ones, mu, I, -I)
   bvec <- c(1,     r_t, rep(0, N), rep(-cap, N))
@@ -60,7 +60,7 @@ solve_frontier_point <- function(r_t) {
 
 frontier <- purrr::map(r_grid, solve_frontier_point) |> list_rbind() |> distinct()
 
-# reference portfolios
+## Reference portfolios
 w_ew <- rep(1/N, N)
 
 refs <- tibble(
@@ -69,7 +69,7 @@ refs <- tibble(
   s_month = c(vol_of(gmv), vol_of(w_ew))
 ) |> mutate(type = "ref")
 
-# combine and annualize for the table
+# annualize for reporting (mu*12, vol*sqrt(12))
 out_tbl <- bind_rows(
   frontier,
   refs
@@ -80,11 +80,10 @@ out_tbl <- bind_rows(
   ) |>
   arrange(s_month, r_month)
 
-# save table
+## Outputs
 dir.create("outputs/tables", recursive = TRUE, showWarnings = FALSE)
 write_csv(out_tbl, "outputs/tables/efficient_frontier_points.csv")
 
-# plot
 p <- ggplot() +
   geom_path(data = frontier, aes(x = s_month, y = r_month), linewidth = 1) +
   geom_point(data = refs, aes(x = s_month, y = r_month), size = 2) +
@@ -98,7 +97,7 @@ p <- ggplot() +
   labs(
     x = "Monthly volatility",
     y = "Monthly expected return",
-    title = "Efficient Frontier (historical μ, Σ) • Long-only, w_i ≤ 10%"
+    title = "Efficient Frontier (historical) • Long-only, 10% cap"
   ) +
   theme_minimal(base_size = 12)
 
@@ -108,4 +107,5 @@ ggsave("outputs/figures/efficient_frontier_past.png", p, width = 8, height = 5, 
 cat("Frontier saved:\n",
     " - outputs/tables/efficient_frontier_points.csv\n",
     " - outputs/figures/efficient_frontier_past.png\n")
+
 
